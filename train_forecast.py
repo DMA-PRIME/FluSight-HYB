@@ -8,7 +8,7 @@ from datetime import timedelta
 import os
 
 from data_loader import load_and_preprocess_data, create_dataloaders
-from model import FluForecaster
+from model import FluForecaster, HybridCNNForecaster
 
 # Configuration
 PRISMA_PATH = 'dataset/Prisma_Health_Weekly_Influenza_State_dx_cond_lab_Severity.csv'
@@ -17,23 +17,19 @@ INPUT_WINDOW = 10
 OUTPUT_WINDOW = 4
 QUANTILES = [0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.50, 
              0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.975, 0.99]
-HIDDEN_SIZE = 128 # Increased
+HIDDEN_SIZE = 128
 NUM_LAYERS = 2
 DROPOUT = 0.3
 BATCH_SIZE = 32
-LEARNING_RATE = 0.0005 # Slower for precision
+LEARNING_RATE = 0.0005
 EPOCHS = 1000
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def quantile_loss(preds, target, quantiles):
-    # preds: (batch, steps, quantiles)
-    # target: (batch, steps)
     loss = 0
     target = target.unsqueeze(2)
     for i, q in enumerate(quantiles):
         errors = target - preds[:, :, i:i+1]
-        # Weighted Loss: penalize errors more during high flu peaks
-        # Weight increases as target (actual delta) or current level increases
         weight = 1.0 + (target.abs() * 2.0)
         loss += (torch.max((q - 1) * errors, q * errors) * weight).mean()
     return loss
@@ -94,25 +90,16 @@ def predict_and_postprocess(model, X_input, scaler_target, quantiles):
         if len(X_tensor.shape) == 2:
             X_tensor = X_tensor.unsqueeze(0)
             
-        # 1. Predict Deltas (residual)
-        preds_deltas = model(X_tensor) # (1, output_window, num_quantiles)
-        preds_deltas = preds_deltas.cpu().numpy().squeeze(0) # (output_window, num_quantiles)
+        preds_deltas = model(X_tensor) 
+        preds_deltas = preds_deltas.cpu().numpy().squeeze(0)
         
-        # 2. Get the "current" log-scaled value from input
-        # It's the last column of the last timestep in the input window
-        # Feature order in data_loader: [..., value_log]
         current_val_scaled = X_input[-1, -1]
-        
-        # 3. Restore Absolute Scaled Values: Absolute = Current + Predicted Delta
         preds_scaled = current_val_scaled + preds_deltas
         
-    # 4. Inverse Transform
     preds_original_scale = np.zeros_like(preds_scaled)
     for i in range(len(quantiles)):
         col_preds = preds_scaled[:, i].reshape(-1, 1)
-        # Inverse MinMaxScaler (back to Log scale)
         inv_scaled = scaler_target.inverse_transform(col_preds).flatten()
-        # Inverse Log (expm1)
         preds_original_scale[:, i] = np.expm1(inv_scaled)
         
     preds_original_scale = np.clip(preds_original_scale, 0, 1)
@@ -126,7 +113,8 @@ def main():
     
     train_loader, val_loader = create_dataloaders(X, y, BATCH_SIZE)
     
-    model = FluForecaster(
+    # Switch to Hybrid CNN-LSTM model
+    model = HybridCNNForecaster(
         input_size=X.shape[2], 
         hidden_size=HIDDEN_SIZE, 
         output_steps=OUTPUT_WINDOW, 
@@ -135,9 +123,10 @@ def main():
         dropout=DROPOUT
     )
     
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # Adding weight_decay for regularization
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
     
-    print("Starting training...")
+    print("Starting training with Hybrid CNN-LSTM model...")
     model = train_model(model, train_loader, val_loader, optimizer, epochs=EPOCHS)
     
     # --- Generation & Backtesting ---
@@ -146,9 +135,7 @@ def main():
         x_in = X[i]
         forecast_start_date = dates[i]
         reference_date = forecast_start_date - timedelta(weeks=1)
-        
         preds = predict_and_postprocess(model, x_in, scaler_target, QUANTILES)
-        
         for step in range(OUTPUT_WINDOW):
             target_end_date = forecast_start_date + timedelta(weeks=step)
             horizon = (target_end_date - reference_date).days // 7
@@ -187,7 +174,6 @@ def main():
     results_df = pd.DataFrame(all_forecast_rows)
     results_df.drop(columns=['type']).to_csv('forecast_results.csv', index=False)
     
-    # Validation Metric
     backtest_medians = results_df[(results_df['type']=='backtest') & (results_df['output_type_id'] == 0.5)].copy()
     backtest_medians['target_end_date'] = pd.to_datetime(backtest_medians['target_end_date'])
     results_with_truth = pd.merge(backtest_medians, df_merged[['date', 'value']], left_on='target_end_date', right_on='date', how='left')
