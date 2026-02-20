@@ -16,88 +16,76 @@ class FluDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_window=4):
-    # Load datasets
     df_prisma = pd.read_csv(prisma_path)
     df_target = pd.read_csv(target_path)
 
-    # Convert date columns to datetime
     df_prisma['Week'] = pd.to_datetime(df_prisma['Week'])
     df_target['date'] = pd.to_datetime(df_target['date'])
 
-    # Filter for South Carolina
-    # Check if 'SC' exists in State column
     if 'SC' in df_prisma['State'].unique():
         df_prisma = df_prisma[df_prisma['State'] == 'SC'].copy()
-    
-    # Check if 'South Carolina' exists in location_name
     if 'South Carolina' in df_target['location_name'].unique():
         df_target = df_target[df_target['location_name'] == 'South Carolina'].copy()
 
-    # Rename Week to date for merging
     df_prisma = df_prisma.rename(columns={'Week': 'date'})
-
-    # Merge datasets on date
     merged_df = pd.merge(df_prisma, df_target, on='date', how='inner')
-    
-    # Sort by date
     merged_df = merged_df.sort_values('date').reset_index(drop=True)
 
-    # Features and Target
+    # --- Lag Features ---
+    merged_df['Tests_lag1'] = merged_df['Weekly_Tests'].shift(1)
+    merged_df['PosTests_lag1'] = merged_df['Weekly_Positive_Tests'].shift(1)
+    merged_df['Target_lag1'] = merged_df['value'].shift(1)
+    
+    # --- Seasonality Features ---
+    # Help with temporal alignment and knowing "where we are" in flu season
+    week_of_year = merged_df['date'].dt.isocalendar().week
+    merged_df['sin_week'] = np.sin(2 * np.pi * week_of_year / 52.18)
+    merged_df['cos_week'] = np.cos(2 * np.pi * week_of_year / 52.18)
+
+    merged_df = merged_df.dropna().reset_index(drop=True)
+
+    # Use Log-scale for stability
+    merged_df['value_log'] = np.log1p(merged_df['value'])
+    
     feature_cols = [
         'Weekly_Inpatient_Hospitalizations', 
         'Weekly_Tests', 
         'Weekly_Positive_Tests', 
         'Weekly_Encounters',
-        'value' # Target is also an input feature per requirements/standard time series practice
+        'Tests_lag1', 'PosTests_lag1', 'Target_lag1',
+        'sin_week', 'cos_week',
+        'value_log'
     ]
-    target_col = 'value'
     
-    # Check for missing values and fill/drop
-    merged_df = merged_df.dropna(subset=feature_cols)
-
     data = merged_df[feature_cols].values
-    target = merged_df[[target_col]].values
+    target_data = merged_df[['value_log']].values
 
-    # Scaling
-    # Requirement: Scale target using MinMaxScaler. 
-    # We should scale all features to help the model learn better, but definitely the target.
-    # For simplicity and requirements, let's scale the target specifically for inverse transform later.
-    # We'll use a separate scaler for the target to easily inverse transform.
-    
     scaler_features = MinMaxScaler()
-    scaler_target = MinMaxScaler()
+    scaler_target = MinMaxScaler() # Fits the global log-range
     
-    # Scale all features (including 'value' which is in feature_cols)
     data_scaled = scaler_features.fit_transform(data)
+    target_scaled = scaler_target.fit_transform(target_data)
     
-    # Fit target scaler separately for inverse transform usage
-    target_scaled = scaler_target.fit_transform(target)
-    
-    # Create sequences
     X, y = [], []
-    dates = [] # Store dates corresponding to the forecast start
+    dates = []
     
     for i in range(len(data_scaled) - input_window - output_window + 1):
-        # Input: features for 'input_window' weeks
+        # 1. Input Features
         X.append(data_scaled[i : i + input_window])
-        # Output: target 'value' for 'output_window' weeks
-        # Note: We are predicting 'value', so we take it from the target array (which is just 'value')
-        # However, the model output should be scaled, so we use the scaled target.
-        # But wait, 'data_scaled' already includes 'value' as the last column.
-        # The target for the loss function should be the future values of 'value'.
         
-        # We need the future 'value's. 
-        # Let's use the 'target_scaled' which is just the 'value' column scaled.
-        y.append(target_scaled[i + input_window : i + input_window + output_window].flatten())
+        # 2. Residual Target: Predict DELTA from current_val (i + input_window - 1)
+        current_val = target_scaled[i + input_window - 1] # Last known log-scaled value
+        future_vals = target_scaled[i + input_window : i + input_window + output_window]
         
-        # Store the date of the first prediction (i + input_window)
+        # We predict (future_val - current_val)
+        deltas = future_vals - current_val # Magnitude centered around zero
+        y.append(deltas.flatten())
+        
         dates.append(merged_df['date'].iloc[i + input_window])
 
     X = np.array(X)
     y = np.array(y)
     
-    # Extract the very last available input window for future forecasting
-    # This is the last 'input_window' rows of data_scaled
     last_input_sequence = data_scaled[-input_window:]
     last_date = merged_df['date'].iloc[-1]
     
