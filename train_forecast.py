@@ -10,49 +10,43 @@ import os
 from data_loader import load_and_preprocess_data, create_dataloaders
 from model import HybridCNNForecaster
 
-# Configuration
+# Configuration - "Optimal Stability" Tuning
 PRISMA_PATH = 'dataset/Prisma_Health_Weekly_Influenza_State_dx_cond_lab_Severity.csv'
 TARGET_PATH = 'dataset/target-ed-visits-prop.csv'
 INPUT_WINDOW = 10
 OUTPUT_WINDOW = 4
 QUANTILES = [0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.50, 
              0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.975, 0.99]
-HIDDEN_SIZE = 128
+HIDDEN_SIZE = 96 # Reduced for better data-to-capacity ratio
 NUM_LAYERS = 2
-DROPOUT = 0.3
-BATCH_SIZE = 32
-LEARNING_RATE = 0.0005
+DROPOUT = 0.4 # Increased for robustness
+BATCH_SIZE = 16 # Smaller for frequent updates
+LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-3 # Stronger regularization
 EPOCHS = 1000
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def balanced_quantile_loss(preds, target, quantiles):
     loss = 0
     target_unsq = target.unsqueeze(2)
-    
-    # 1. Primary Magnitude Loss (Pinball)
     for i, q in enumerate(quantiles):
         errors = target_unsq - preds[:, :, i:i+1]
-        # Emphasis on absolute value accuracy
         loss += torch.max((q - 1) * errors, q * errors).mean()
-        
-    # 2. Smooth L1 for the Median (Magnitude Stability)
+    
     median_pred = preds[:, :, 11]
     loss += F.smooth_l1_loss(median_pred, target) * 5.0
     
-    # 3. Temporal Alignment (Direction Penalty)
     if target.shape[1] > 1:
         target_diff = target[:, 1:] - target[:, :-1]
         pred_diff = median_pred[:, 1:] - median_pred[:, :-1]
-        # Penalize if prediction moves in opposite direction of ground truth
-        direction_penalty = F.relu(-pred_diff * target_diff).mean()
-        loss += direction_penalty * 10.0
+        loss += F.relu(-pred_diff * target_diff).mean() * 10.0
         
     return loss
 
-def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, epochs=1000):
     model.to(DEVICE)
     best_val_loss = float('inf')
-    patience = 60
+    patience = 100
     counter = 0
     
     for epoch in range(epochs):
@@ -60,6 +54,12 @@ def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
         train_loss = 0
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
+            
+            # Add Gaussian Noise to input for extreme regularization
+            if model.training:
+                noise = torch.randn_like(X_batch) * 0.01
+                X_batch = X_batch + noise
+                
             optimizer.zero_grad()
             preds = model(X_batch)
             loss = balanced_quantile_loss(preds, y_batch, QUANTILES)
@@ -68,6 +68,7 @@ def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
             train_loss += loss.item()
             
         train_loss /= len(train_loader)
+        
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -78,8 +79,12 @@ def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
                 val_loss += loss.item()
         val_loss /= len(val_loader)
         
+        # Step the scheduler based on validation loss
+        scheduler.step(val_loss)
+        
         if (epoch + 1) % 50 == 0:
-            print(f'Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+            curr_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {curr_lr:.6f}')
             
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -100,9 +105,8 @@ def predict_and_postprocess(model, X_input, scaler_target, quantiles):
         X_tensor = torch.FloatTensor(X_input).to(DEVICE)
         if len(X_tensor.shape) == 2:
             X_tensor = X_tensor.unsqueeze(0)
-        preds_scaled = model(X_tensor).cpu().numpy().squeeze(0) # (4, 23)
+        preds_scaled = model(X_tensor).cpu().numpy().squeeze(0)
         
-    # Inverse scaling and log transform
     preds_original = np.zeros_like(preds_scaled)
     for i in range(len(quantiles)):
         col = preds_scaled[:, i].reshape(-1, 1)
@@ -113,15 +117,20 @@ def predict_and_postprocess(model, X_input, scaler_target, quantiles):
     return np.sort(preds_original, axis=1)
 
 def main():
-    print("Loading data (Balanced Strategy)...")
+    print("Loading data (Optimal Stability Strategy)...")
     X, y, dates, scaler_target, df_merged, last_input, last_date, anchors, last_anchor = load_and_preprocess_data(PRISMA_PATH, TARGET_PATH, INPUT_WINDOW, OUTPUT_WINDOW)
-    train_loader, val_loader = create_dataloaders(X, y, BATCH_SIZE)
+    train_loader, val_loader = create_dataloaders(X, y, BATCH_SIZE, train_split=0.9)
     
     model = HybridCNNForecaster(input_size=X.shape[2], hidden_size=HIDDEN_SIZE, output_steps=OUTPUT_WINDOW, num_quantiles=len(QUANTILES))
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     
-    print("Training Balanced R-GLSTM Model...")
-    model = train_model(model, train_loader, val_loader, optimizer, epochs=EPOCHS)
+    # AdamW Optimizer with Weight Decay
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    
+    # Learning Rate Scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
+    
+    print("Training Enhanced Model...")
+    model = train_model(model, train_loader, val_loader, optimizer, scheduler, epochs=EPOCHS)
     
     all_forecast_rows = []
     for i in range(len(X)):
@@ -142,7 +151,6 @@ def main():
                     'value': preds[step, q_idx]
                 })
             
-    # Future
     future_preds = predict_and_postprocess(model, last_input, scaler_target, QUANTILES)
     for step in range(OUTPUT_WINDOW):
         target_end = last_date + timedelta(weeks=step+1)
