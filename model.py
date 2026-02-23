@@ -2,65 +2,64 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class CausalConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
         super().__init__()
-        self.padding = (kernel_size - 1) * dilation
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, 
-                              padding=self.padding, dilation=dilation)
-        self.dropout = nn.Dropout(0.2)
-        self.norm = nn.GroupNorm(8, out_channels) # Better for small batches than BatchNorm
-
+        self.attn = nn.Linear(hidden_size, 1)
     def forward(self, x):
-        # x: (batch, channels, seq_len)
-        x = self.conv(x)
-        x = x[:, :, :-self.padding] # Remove future padding
-        return F.relu(self.norm(self.dropout(x)))
+        weights = F.softmax(self.attn(x), dim=1)
+        return torch.sum(weights * x, dim=1), weights
 
 class HybridCNNForecaster(nn.Module):
-    """TCN-based Forecaster for Lag Reduction
-    Replaces LSTM with Causal Convolutions to eliminate sequential persistence bias.
+    """Residual Gated LSTM (R-GLSTM)
+    Explicitly balances Magnitude (Absolute path) and Phase (Delta path).
     """
     def __init__(self, input_size, hidden_size, output_steps, num_quantiles, num_layers=2, dropout=0.3):
         super().__init__()
         self.output_steps = output_steps
         self.num_quantiles = num_quantiles
         
-        # TCN Backbone: Captures features at different temporal scales
-        self.tcn = nn.Sequential(
-            CausalConvBlock(input_size, hidden_size, kernel_size=3, dilation=1),
-            CausalConvBlock(hidden_size, hidden_size, kernel_size=3, dilation=2),
-            CausalConvBlock(hidden_size, hidden_size, kernel_size=3, dilation=4)
-        )
+        # Encoder: Extract local features
+        self.conv = nn.Conv1d(input_size, hidden_size, kernel_size=3, padding=1)
         
-        # Multi-scale aggregation
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        # Sequential Memory
+        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True, dropout=dropout, bidirectional=True)
         
-        # Independent Predictors for each week-ahead (Direct Multi-Horizon)
-        self.predictors = nn.ModuleList([
+        # Dual-Path Decoder
+        # 1. Magnitude Path (Predicts the likely absolute level)
+        self.mag_attn = Attention(hidden_size * 2)
+        
+        # 2. Phase Path (Predicts the temporal correction/shift)
+        self.phase_attn = Attention(hidden_size * 2)
+        
+        # Final Gated Integration
+        self.gate = nn.Linear(hidden_size * 4, output_steps) # Gating mechanism
+        
+        self.out = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_size, hidden_size),
+                nn.Linear(hidden_size * 4, hidden_size),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_size, num_quantiles)
             ) for _ in range(output_steps)
         ])
-        
+
     def forward(self, x):
         # x: (batch, seq_len, input_size)
-        x = x.transpose(1, 2) # (batch, channels, seq_len)
+        x_conv = F.relu(self.conv(x.transpose(1, 2))).transpose(1, 2)
         
-        # TCN features
-        features = self.tcn(x) # (batch, hidden_size, seq_len)
+        lstm_out, _ = self.lstm(x_conv) # (batch, seq_len, hidden_size*2)
         
-        # Aggregate across time (Focus on the 'whole window context')
-        # We use both the 'current' time step features and the window-wide average
-        last_step = features[:, :, -1] # (batch, hidden_size)
-        avg_pool = self.global_pool(features).squeeze(2) # (batch, hidden_size)
+        # Extract dual contexts
+        mag_context, _ = self.mag_attn(lstm_out)
+        phase_context, _ = self.phase_attn(lstm_out)
         
-        context = (last_step + avg_pool) / 2.0
+        # Combine contexts
+        combined_context = torch.cat([mag_context, phase_context], dim=-1) # (batch, hidden_size*4)
         
-        # Generate predictions for each horizon independently
-        preds = [predictor(context) for predictor in self.predictors]
-        
+        # Multi-horizon prediction
+        preds = []
+        for predictor in self.out:
+            preds.append(predictor(combined_context))
+            
         return torch.stack(preds, dim=1) # (batch, output_steps, num_quantiles)
