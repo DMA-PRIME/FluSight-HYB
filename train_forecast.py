@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import pandas as pd
 import numpy as np
@@ -8,7 +9,7 @@ from datetime import timedelta
 import os
 
 from data_loader import load_and_preprocess_data, create_dataloaders
-from model import FluForecaster, HybridCNNForecaster
+from model import HybridCNNForecaster
 
 # Configuration
 PRISMA_PATH = 'dataset/Prisma_Health_Weekly_Influenza_State_dx_cond_lab_Severity.csv'
@@ -17,27 +18,44 @@ INPUT_WINDOW = 10
 OUTPUT_WINDOW = 4
 QUANTILES = [0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.50, 
              0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.975, 0.99]
-HIDDEN_SIZE = 128
+HIDDEN_SIZE = 256 # Increased for more capacity
 NUM_LAYERS = 2
 DROPOUT = 0.3
 BATCH_SIZE = 32
-LEARNING_RATE = 0.0005
+LEARNING_RATE = 0.0003 # Finer learning rate
 EPOCHS = 1000
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def quantile_loss(preds, target, quantiles):
+    # preds: (batch, steps, quantiles)
+    # target: (batch, steps)
     loss = 0
-    target = target.unsqueeze(2)
+    target_unsq = target.unsqueeze(2)
+    
+    # 1. Standard Pinball Loss
     for i, q in enumerate(quantiles):
-        errors = target - preds[:, :, i:i+1]
-        weight = 1.0 + (target.abs() * 2.0)
+        errors = target_unsq - preds[:, :, i:i+1]
+        weight = 1.0 + (target_unsq.abs() * 5.0) # Heavier weight on large changes
         loss += (torch.max((q - 1) * errors, q * errors) * weight).mean()
+        
+    # 2. Gradient Alignment Loss (Slope Matching)
+    # Encourages matching the shape of the curve, reducing temporal lag
+    if target.shape[1] > 1:
+        # Calculate slopes for ground truth and the median prediction (idx 11)
+        target_slope = target[:, 1:] - target[:, :-1]
+        pred_median = preds[:, :, 11]
+        pred_slope = pred_median[:, 1:] - pred_median[:, :-1]
+        
+        # Penalize slope mismatch
+        slope_loss = F.mse_loss(pred_slope, target_slope)
+        loss += slope_loss * 2.0 # Weight for gradient alignment
+        
     return loss
 
 def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
     model.to(DEVICE)
     best_val_loss = float('inf')
-    patience = 50
+    patience = 70
     counter = 0
     
     for epoch in range(epochs):
@@ -113,7 +131,6 @@ def main():
     
     train_loader, val_loader = create_dataloaders(X, y, BATCH_SIZE)
     
-    # Switch to Hybrid CNN-LSTM model
     model = HybridCNNForecaster(
         input_size=X.shape[2], 
         hidden_size=HIDDEN_SIZE, 
@@ -123,10 +140,9 @@ def main():
         dropout=DROPOUT
     )
     
-    # Adding weight_decay for regularization
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
     
-    print("Starting training with Hybrid CNN-LSTM model...")
+    print("Starting training with Gradient Alignment strategy...")
     model = train_model(model, train_loader, val_loader, optimizer, epochs=EPOCHS)
     
     # --- Generation & Backtesting ---
