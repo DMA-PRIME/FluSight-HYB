@@ -47,10 +47,23 @@ Create a visualization that includes:
        - Displays all four forecast horizons (1, 2, 3, and 4 weeks ahead) simultaneously.
        - Each horizon is color-coded to show how prediction accuracy and confidence evolve as the lead time increases.
        - Provides a direct comparison against the Ground Truth to evaluate model stability over time.
-
 The figure should:
 Clearly distinguish forecast horizons
 Display the probabilistic range (shaded interval preferred)
 Include relevant evaluation metric values (e.g., MAE, RMSE, or other selected metrics) directly within the figure
 The plot must provide a clear comparison between predicted and observed values across all forecast horizons.
 
+
+
+# skill:
+  Advanced Refinements Implemented:
+   1. Gradient Alignment Loss: The loss function now includes a penalty for matching the slopes (first derivatives) of the ground truth.    
+      This forces the model to align the "shape" of the curve, effectively pulling the predicted peaks forward in time to match the
+      observations.
+   2. Dilated CNN Encoder: Replaced standard convolutions with Dilated Convolutions in model.py. This exponentially increases the model's   
+      receptive field within the 10-week window, allowing it to detect early-warning signals (like accelerating positive tests) much        
+      earlier.
+   3. Acceleration Features: Added second-order deltas (acceleration) for Weekly_Positive_Tests. This provides the model with explicit      
+      information about whether an outbreak is speeding up, which is a key leading indicator for preventing lag.
+   4. Increased Model Capacity: Doubled the HIDDEN_SIZE to 256 and refined the LEARNING_RATE to 0.0003 to allow the model to learn these    
+      more complex temporal relationships.
