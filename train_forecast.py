@@ -18,45 +18,35 @@ INPUT_WINDOW = 10
 OUTPUT_WINDOW = 4
 QUANTILES = [0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.50, 
              0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.975, 0.99]
-HIDDEN_SIZE = 256
-NUM_LAYERS = 2
-DROPOUT = 0.3
+HIDDEN_SIZE = 128 # TCN is efficient, can use slightly smaller hidden
+NUM_LAYERS = 3
+DROPOUT = 0.2
 BATCH_SIZE = 32
-LEARNING_RATE = 0.0003
+LEARNING_RATE = 0.001
 EPOCHS = 1000
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def quantile_loss(preds, target, quantiles):
     loss = 0
     target_unsq = target.unsqueeze(2)
-    
-    # 1. Standard Pinball Loss
     for i, q in enumerate(quantiles):
         errors = target_unsq - preds[:, :, i:i+1]
-        weight = 1.0 + (target_unsq.abs() * 10.0) # Even heavier weight on changes
+        weight = 1.0 + (target_unsq.abs() * 10.0)
         loss += (torch.max((q - 1) * errors, q * errors) * weight).mean()
         
-    # 2. Advanced Gradient Alignment (Phase Penalty)
-    # Penalize not just slope mismatch, but direction mismatch specifically
+    # Gradient/Phase Alignment
     if target.shape[1] > 1:
         target_slope = target[:, 1:] - target[:, :-1]
         pred_median = preds[:, :, 11]
         pred_slope = pred_median[:, 1:] - pred_median[:, :-1]
-        
-        # Phase Penalty: MSE of slopes
-        slope_loss = F.mse_loss(pred_slope, target_slope)
-        
-        # Sign Penalty: Encourage predicting the correct direction of change
-        sign_loss = torch.mean(F.relu(-pred_slope * target_slope)) 
-        
-        loss += slope_loss * 5.0 + sign_loss * 2.0
+        loss += F.mse_loss(pred_slope, target_slope) * 10.0 # Aggressive slope matching
         
     return loss
 
 def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
     model.to(DEVICE)
     best_val_loss = float('inf')
-    patience = 80
+    patience = 100
     counter = 0
     
     for epoch in range(epochs):
@@ -100,19 +90,12 @@ def train_model(model, train_loader, val_loader, optimizer, epochs=1000):
     return model
 
 def predict_and_postprocess(model, X_input, anchor_val, scaler_target, quantiles):
-    """
-    anchor_val: The last known absolute scaled value (from 'anchors' list)
-    """
     model.eval()
     with torch.no_grad():
         X_tensor = torch.FloatTensor(X_input).to(DEVICE)
         if len(X_tensor.shape) == 2:
             X_tensor = X_tensor.unsqueeze(0)
-            
-        preds_deltas = model(X_tensor) 
-        preds_deltas = preds_deltas.cpu().numpy().squeeze(0) # (4, 23)
-        
-        # Adaptive Compensation: Restore using the explicit anchor
+        preds_deltas = model(X_tensor).cpu().numpy().squeeze(0)
         preds_scaled = anchor_val + preds_deltas
         
     preds_original_scale = np.zeros_like(preds_scaled)
@@ -126,7 +109,7 @@ def predict_and_postprocess(model, X_input, anchor_val, scaler_target, quantiles
     return preds_sorted
 
 def main():
-    print("Loading data with Adaptive Lag Compensation...")
+    print("Loading data with Signal-Lead refinement...")
     X, y, dates, scaler_target, df_merged, last_input, last_date, anchors, last_anchor = load_and_preprocess_data(PRISMA_PATH, TARGET_PATH, INPUT_WINDOW, OUTPUT_WINDOW)
     
     train_loader, val_loader = create_dataloaders(X, y, BATCH_SIZE)
@@ -140,21 +123,18 @@ def main():
         dropout=DROPOUT
     )
     
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     
-    print("Starting training (Adaptive Lag Compensation mode)...")
+    print("Starting training (TCN Lag-Elimination mode)...")
     model = train_model(model, train_loader, val_loader, optimizer, epochs=EPOCHS)
     
-    # --- Generation & Backtesting ---
+    # Generation
     all_forecast_rows = []
     for i in range(len(X)):
-        x_in = X[i]
-        anchor = anchors[i]
+        x_in, anchor = X[i], anchors[i]
         forecast_start_date = dates[i]
         reference_date = forecast_start_date - timedelta(weeks=1)
-        
         preds = predict_and_postprocess(model, x_in, anchor, scaler_target, QUANTILES)
-        
         for step in range(OUTPUT_WINDOW):
             target_end_date = forecast_start_date + timedelta(weeks=step)
             horizon = (target_end_date - reference_date).days // 7
@@ -171,7 +151,6 @@ def main():
                     'type': 'backtest'
                 })
             
-    # --- Future Forecast ---
     future_preds = predict_and_postprocess(model, last_input, last_anchor, scaler_target, QUANTILES)
     future_start_date = last_date + timedelta(weeks=1)
     for step in range(OUTPUT_WINDOW):
@@ -190,17 +169,8 @@ def main():
                 'type': 'future'
             })
             
-    results_df = pd.DataFrame(all_forecast_rows)
-    results_df.drop(columns=['type']).to_csv('forecast_results.csv', index=False)
-    
-    # Validation Metric
-    backtest_medians = results_df[(results_df['type']=='backtest') & (results_df['output_type_id'] == 0.5)].copy()
-    backtest_medians['target_end_date'] = pd.to_datetime(backtest_medians['target_end_date'])
-    results_with_truth = pd.merge(backtest_medians, df_merged[['date', 'value']], left_on='target_end_date', right_on='date', how='left')
-    valid_results = results_with_truth.dropna(subset=['value_y'])
-    if not valid_results.empty:
-        mae = np.mean(np.abs(valid_results['value_x'] - valid_results['value_y']))
-        print(f"Mean Absolute Error (Backtest Median): {mae:.4f}")
+    pd.DataFrame(all_forecast_rows).drop(columns=['type']).to_csv('forecast_results.csv', index=False)
+    print("Done. MAE calculated via visualize_results.py")
 
 if __name__ == "__main__":
     main()
