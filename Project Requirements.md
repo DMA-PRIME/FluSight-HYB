@@ -39,11 +39,14 @@ results_format_example_2026-02-07-team-model.csv is provided as an example outpu
 All forecasting results must strictly follow the same column structure, naming conventions, and formatting requirements demonstrated in the example file.
 ## 9. Plot the Results
 Create a visualization that includes:
-1-week, 2-week, 3-week, and 4-week ahead predictions
-Ground truth values
-the `Weekly_Positive_Tests` count, plotted on the right-side axis. This allows you to compare the trend of positive tests directly with the predicted flu proportion, even though they are on different scales. This addition makes it easier to see how well the model captures the relationship between positive lab tests and the overall ED visit proportion across all four forecast horizons. filter the `Weekly_Positive_Tests` data so it only starts from the beginning of the ground truth data range.
-Median forecast ($Q_{50}$)
-80% prediction interval (e.g., $Q_{10}$–$Q_{90}$ band)
+   - Top Subplot (Temporal Continuity):
+       - Presents the historical 1-week-ahead forecast as a continuous line.
+       - At the end of the timeline, it extends with a 3-week future projection (using the 2, 3, and 4-week forecasts from the latest reference date).
+       - Includes the 80% prediction interval and overlays Weekly Positive Tests on a secondary Y-axis for trend comparison. filter the Weekly_Positive_Tests data so it only starts from the beginning of the ground truth data range.
+   - Bottom Subplot (Multi-Horizon Overlay):
+       - Displays all four forecast horizons (1, 2, 3, and 4 weeks ahead) simultaneously.
+       - Each horizon is color-coded to show how prediction accuracy and confidence evolve as the lead time increases.
+       - Provides a direct comparison against the Ground Truth to evaluate model stability over time.
 
 The figure should:
 Clearly distinguish forecast horizons

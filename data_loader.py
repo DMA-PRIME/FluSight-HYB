@@ -91,7 +91,7 @@ def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_w
     
     return X, y, dates, scaler_target, merged_df, last_input_sequence, last_date
 
-def create_dataloaders(X, y, batch_size=32, train_split=0.8):
+def create_dataloaders(X, y, batch_size=32, train_split=0.9):
     dataset_size = len(X)
     train_size = int(dataset_size * train_split)
     
