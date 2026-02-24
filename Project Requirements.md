@@ -67,3 +67,11 @@ The plot must provide a clear comparison between predicted and observed values a
       information about whether an outbreak is speeding up, which is a key leading indicator for preventing lag.
    4. Increased Model Capacity: Doubled the HIDDEN_SIZE to 256 and refined the LEARNING_RATE to 0.0003 to allow the model to learn these    
       more complex temporal relationships.
+
+  Final Optimized Enhancements:
+   1. AdamW Optimizer & LR Scheduler: Switched to AdamW for better weight decay handling and implemented a ReduceLROnPlateau scheduler. This allowed the model to start at a higher learning rate (0.001) and "cool down" to 0.000125, enabling precise magnitude matching without overshooting.
+   2. Inception-style Parallel CNN: The architecture in model.py now uses parallel kernels (size 3 and 5). This allows the model to simultaneously process weekly fluctuations and monthly seasonal trends.
+   3. Small-Batch Regularization: Reduced the Batch Size to 16, increasing the frequency of weight updates and introducing beneficial stochastic noise.
+   4. GELU Activation: Replaced ReLU with GELU (Gaussian Error Linear Unit) for smoother gradients, which is particularly effective for small datasets and attention-based models.
+   5. Gaussian Input Noise: Added 0.01 magnitude Gaussian noise to the input features during training. This acts as a data augmentation technique, forcing the model to learn the underlying trend rather than the noise in public health reporting.
+   6. Refined hidden size: Optimized the hidden units to 96 to maintain a healthy data-to-capacity ratio.

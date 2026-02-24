@@ -13,7 +13,7 @@ class FluDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_window=4):
+def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_window=4, target_name='wk inc flu prop ed visits'):
     df_prisma = pd.read_csv(prisma_path)
     df_target = pd.read_csv(target_path)
     df_prisma['Week'] = pd.to_datetime(df_prisma['Week'])
@@ -23,6 +23,10 @@ def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_w
         df_prisma = df_prisma[df_prisma['State'] == 'SC'].copy()
     if 'South Carolina' in df_target['location_name'].unique():
         df_target = df_target[df_target['location_name'] == 'South Carolina'].copy()
+
+    # Filter for values > 0 for hospital admissions as per requirement
+    if 'hospital-admissions' in target_path:
+        df_target = df_target[df_target['value'] > 0].copy()
 
     df_prisma = df_prisma.rename(columns={'Week': 'date'})
     merged_df = pd.merge(df_prisma, df_target, on='date', how='inner')
@@ -52,9 +56,8 @@ def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_w
         'Weekly_Encounters', 'Weekly_Inpatient_Hospitalizations' # Activity
     ]
     
-    # Scaling: Use StandardScaler for features to normalize variance
     scaler_features = StandardScaler()
-    scaler_target = MinMaxScaler() # Keep MinMaxScaler for the residual target range
+    scaler_target = MinMaxScaler()
     
     data_scaled = scaler_features.fit_transform(merged_df[feature_cols])
     target_scaled = scaler_target.fit_transform(merged_df[['value_log']])
@@ -62,11 +65,8 @@ def load_and_preprocess_data(prisma_path, target_path, input_window=10, output_w
     X, y, dates, anchors = [], [], [], []
     for i in range(len(data_scaled) - input_window - output_window + 1):
         X.append(data_scaled[i : i + input_window])
-        # We predict ABSOLUTE levels now to restore magnitude accuracy, 
-        # but the model architecture will handle the residual logic internally.
         y.append(target_scaled[i + input_window : i + input_window + output_window].flatten())
         dates.append(merged_df['date'].iloc[i + input_window])
-        # Anchor is the last seen absolute log-value (unscaled by target_scaler for calculation)
         anchors.append(merged_df['value_log'].iloc[i + input_window - 1])
 
     return np.array(X), np.array(y), dates, scaler_target, merged_df, data_scaled[-input_window:], merged_df['date'].iloc[-1], anchors, merged_df['value_log'].iloc[-1]
