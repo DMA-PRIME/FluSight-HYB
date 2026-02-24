@@ -12,6 +12,9 @@ from model import HybridCNNForecaster
 
 # Configuration - "Optimal Stability" Tuning
 PRISMA_PATH = 'dataset/Prisma_Health_Weekly_Influenza_State_dx_cond_lab_Severity.csv'
+RESULTS_DIR = 'results'
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
 TARGETS_CONFIG = [
     {
         'path': 'dataset/target-ed-visits-prop.csv',
@@ -116,9 +119,8 @@ def predict_and_postprocess(model, X_input, scaler_target, quantiles):
     return np.sort(preds_original, axis=1)
 
 def main():
-    all_combined_rows = []
-    
     for config in TARGETS_CONFIG:
+        all_combined_rows = []
         target_path = config['path']
         target_name = config['name']
         print(f"\nProcessing Target: {target_name} ({target_path})")
@@ -132,7 +134,7 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
         
-        model_filename = f"best_model_{target_name.replace(' ', '_')}.pth"
+        model_filename = os.path.join(RESULTS_DIR, f"best_model_{target_name.replace(' ', '_')}.pth")
         model = train_model(model, train_loader, val_loader, optimizer, scheduler, model_filename, epochs=EPOCHS)
         
         # Generation
@@ -170,8 +172,20 @@ def main():
                     'value': future_preds[step, q_idx]
                 })
             
-    pd.DataFrame(all_combined_rows).to_csv('forecast_results.csv', index=False)
-    print("\nAll targets processed. Results saved to forecast_results.csv")
+        output_filename = os.path.join(RESULTS_DIR, f"forecast_results_{target_name.replace(' ', '_')}.csv")
+        results_df = pd.DataFrame(all_combined_rows)
+        results_df.to_csv(output_filename, index=False)
+        print(f"Results for {target_name} saved to {output_filename}")
+        
+        # New Requirement: Generate latest-only file
+        last_ref_date = results_df['reference_date'].max()
+        latest_only_df = results_df[results_df['reference_date'] == last_ref_date].copy()
+        
+        # Clean target name for filename
+        clean_target = target_name.replace(' ', '-')
+        latest_filename = os.path.join(RESULTS_DIR, f"{last_ref_date}-team-model-{clean_target}.csv")
+        latest_only_df.to_csv(latest_filename, index=False)
+        print(f"Latest-only results for {target_name} saved to {latest_filename}")
 
 if __name__ == "__main__":
     main()

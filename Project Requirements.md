@@ -75,3 +75,49 @@ The plot must provide a clear comparison between predicted and observed values a
    4. GELU Activation: Replaced ReLU with GELU (Gaussian Error Linear Unit) for smoother gradients, which is particularly effective for small datasets and attention-based models.
    5. Gaussian Input Noise: Added 0.01 magnitude Gaussian noise to the input features during training. This acts as a data augmentation technique, forcing the model to learn the underlying trend rather than the noise in public health reporting.
    6. Refined hidden size: Optimized the hidden units to 96 to maintain a healthy data-to-capacity ratio.
+
+  Key Changes Implemented:
+   1. Multi-Target Support:
+       * Updated train_forecast.py to iterate through multiple target configurations.
+       * The project now predicts both:
+           * wk inc flu prop ed visits (original)
+           * wk inc flu hosp (new)
+   2. Data Filtering:
+       * In data_loader.py, added a specific filter for the hospital admissions dataset to include only records where value > 0, as
+         requested.
+   3. Visualization Enhancement:
+       * visualize_results.py now automatically generates a separate, multi-panel figure for each target.
+       * Figures generated:
+           * `forecast_visualization_wk_inc_flu_prop_ed_visits.png`
+           * `forecast_visualization_wk_inc_flu_hosp.png`
+   4. Output Integration:
+       * All predictions are combined into a single `forecast_results.csv` file, with the target column clearly distinguishing between the
+         two objectives.
+
+   1. Strict Visualization Alignment:
+       * visualize_results.py now filters the Weekly_Positive_Tests data to plot only from the starting date of the ground truth for each   
+         specific target. This ensures a clean and accurate trend comparison.
+   2. Separate Output Files:
+       * train_forecast.py no longer combines all predictions into a single file. Instead, it saves results into two distinct CSV files:    
+           * `forecast_results_wk_inc_flu_prop_ed_visits.csv`
+           * `forecast_results_wk_inc_flu_hosp.csv`
+   3. Visualization Update:
+       * The script now automatically detects these separate files and generates the corresponding figures:
+           * `forecast_visualization_wk_inc_flu_prop_ed_visits.png`
+           * `forecast_visualization_wk_inc_flu_hosp.png`
+
+
+  Changes Implemented:
+   1. Repository Organization:
+       * Updated .gitignore to exclude the results/ folder, keeping the repository clean of transient output files.
+   2. Output Path Management:
+       * Modified train_forecast.py to automatically create the results/ folder if it doesn't exist.
+       * Trained models (.pth) and forecast results (.csv) are now saved directly into results/.
+   3. Visualization Integration:
+       * Updated visualize_results.py to read the specific result files from the results/ directory.
+       * Generated plots (.png) are now also saved directly into the results/ folder.
+
+  New Output Files in `results/` folder:
+  For each target, the script now creates a specific submission-style file containing only the most recent reference date's predictions:
+   1. `2026-02-14-team-model-wk-inc-flu-prop-ed-visits.csv`
+   2. `2026-02-14-team-model-wk-inc-flu-hosp.csv`
