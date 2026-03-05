@@ -58,15 +58,10 @@ The plot must provide a clear comparison between predicted and observed values a
 # skill:
   Advanced Refinements Implemented:
    1. Gradient Alignment Loss: The loss function now includes a penalty for matching the slopes (first derivatives) of the ground truth.    
-      This forces the model to align the "shape" of the curve, effectively pulling the predicted peaks forward in time to match the
-      observations.
-   2. Dilated CNN Encoder: Replaced standard convolutions with Dilated Convolutions in model.py. This exponentially increases the model's   
-      receptive field within the 10-week window, allowing it to detect early-warning signals (like accelerating positive tests) much        
-      earlier.
-   3. Acceleration Features: Added second-order deltas (acceleration) for Weekly_Positive_Tests. This provides the model with explicit      
-      information about whether an outbreak is speeding up, which is a key leading indicator for preventing lag.
-   4. Increased Model Capacity: Doubled the HIDDEN_SIZE to 256 and refined the LEARNING_RATE to 0.0003 to allow the model to learn these    
-      more complex temporal relationships.
+      This forces the model to align the "shape" of the curve, effectively pulling the predicted peaks forward in time to match the observations.
+   2. Dilated CNN Encoder: Replaced standard convolutions with Dilated Convolutions in model.py. This exponentially increases the model's receptive field within the 10-week window, allowing it to detect early-warning signals (like accelerating positive tests) much earlier.
+   3. Acceleration Features: Added second-order deltas (acceleration) for Weekly_Positive_Tests. This provides the model with explicit information about whether an outbreak is speeding up, which is a key leading indicator for preventing lag.
+   4. Increased Model Capacity: Doubled the HIDDEN_SIZE to 256 and refined the LEARNING_RATE to 0.0003 to allow the model to learn these more complex temporal relationships.
 
   Final Optimized Enhancements:
    1. AdamW Optimizer & LR Scheduler: Switched to AdamW for better weight decay handling and implemented a ReduceLROnPlateau scheduler. This allowed the model to start at a higher learning rate (0.001) and "cool down" to 0.000125, enabling precise magnitude matching without overshooting.
@@ -82,21 +77,20 @@ The plot must provide a clear comparison between predicted and observed values a
        * The project now predicts both:
            * wk inc flu prop ed visits (original)
            * wk inc flu hosp (new)
+   - For ED visit proportions, the predictions are now non-negative and capped at 1.0.
+   - For hospital admissions, the predictions are only restricted to be non-negative.
    2. Data Filtering:
-       * In data_loader.py, added a specific filter for the hospital admissions dataset to include only records where value > 0, as
-         requested.
+       * In data_loader.py, added a specific filter for the hospital admissions dataset to include only records where value > 0, as requested.
    3. Visualization Enhancement:
        * visualize_results.py now automatically generates a separate, multi-panel figure for each target.
        * Figures generated:
            * `forecast_visualization_wk_inc_flu_prop_ed_visits.png`
            * `forecast_visualization_wk_inc_flu_hosp.png`
    4. Output Integration:
-       * All predictions are combined into a single `forecast_results.csv` file, with the target column clearly distinguishing between the
-         two objectives.
+       * All predictions are combined into a single `forecast_results.csv` file, with the target column clearly distinguishing between the two objectives.
 
    1. Strict Visualization Alignment:
-       * visualize_results.py now filters the Weekly_Positive_Tests data to plot only from the starting date of the ground truth for each   
-         specific target. This ensures a clean and accurate trend comparison.
+       * visualize_results.py now filters the Weekly_Positive_Tests data to plot only from the starting date of the ground truth for each specific target. This ensures a clean and accurate trend comparison.
    2. Separate Output Files:
        * train_forecast.py no longer combines all predictions into a single file. Instead, it saves results into two distinct CSV files:    
            * `forecast_results_wk_inc_flu_prop_ed_visits.csv`

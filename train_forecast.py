@@ -101,7 +101,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, model_pat
     model.load_state_dict(torch.load(model_path))
     return model
 
-def predict_and_postprocess(model, X_input, scaler_target, quantiles):
+def predict_and_postprocess(model, X_input, scaler_target, quantiles, target_name):
     model.eval()
     with torch.no_grad():
         X_tensor = torch.FloatTensor(X_input).to(DEVICE)
@@ -115,7 +115,12 @@ def predict_and_postprocess(model, X_input, scaler_target, quantiles):
         inv_scaled = scaler_target.inverse_transform(col).flatten()
         preds_original[:, i] = np.expm1(inv_scaled)
         
-    preds_original = np.clip(preds_original, 0, None) # Allow values > 1 for admissions
+    # Target-specific restrictions
+    if 'prop' in target_name:
+        preds_original = np.clip(preds_original, 0, 1.0)
+    else:
+        preds_original = np.clip(preds_original, 0, None)
+        
     return np.sort(preds_original, axis=1)
 
 def main():
@@ -139,34 +144,35 @@ def main():
         
         # Generation
         for i in range(len(X)):
-            preds = predict_and_postprocess(model, X[i], scaler_target, QUANTILES)
+            preds = predict_and_postprocess(model, X[i], scaler_target, QUANTILES, target_name)
             start_date = dates[i]
-            ref_date = start_date - timedelta(weeks=1)
+            ref_date = start_date
             for step in range(OUTPUT_WINDOW):
                 target_end = start_date + timedelta(weeks=step)
                 for q_idx, q_val in enumerate(QUANTILES):
                     all_combined_rows.append({
                         'reference_date': ref_date.strftime('%Y-%m-%d'),
                         'target': target_name,
-                        'horizon': step + 1,
+                        'horizon': step,
                         'target_end_date': target_end.strftime('%Y-%m-%d'),
-                        'location': 'South Carolina',
+                        'location': '45',
                         'output_type': 'quantile',
                         'output_type_id': q_val,
                         'value': preds[step, q_idx]
                     })
                 
         # Future
-        future_preds = predict_and_postprocess(model, last_input, scaler_target, QUANTILES)
+        last_date = last_date + timedelta(weeks=1)
+        future_preds = predict_and_postprocess(model, last_input, scaler_target, QUANTILES, target_name)
         for step in range(OUTPUT_WINDOW):
-            target_end = last_date + timedelta(weeks=step+1)
+            target_end = last_date + timedelta(weeks=step)
             for q_idx, q_val in enumerate(QUANTILES):
                 all_combined_rows.append({
                     'reference_date': last_date.strftime('%Y-%m-%d'),
                     'target': target_name,
-                    'horizon': step + 1,
+                    'horizon': step,
                     'target_end_date': target_end.strftime('%Y-%m-%d'),
-                    'location': 'South Carolina',
+                    'location': '45',
                     'output_type': 'quantile',
                     'output_type_id': q_val,
                     'value': future_preds[step, q_idx]
@@ -183,7 +189,8 @@ def main():
         
         # Clean target name for filename
         clean_target = target_name.replace(' ', '-')
-        latest_filename = os.path.join(RESULTS_DIR, f"{last_ref_date}-team-model-{clean_target}.csv")
+        gen_file_date = last_date - timedelta(days=3)
+        latest_filename = os.path.join(RESULTS_DIR, f"{gen_file_date.strftime('%Y-%m-%d')}-team-model-{clean_target}.csv")
         latest_only_df.to_csv(latest_filename, index=False)
         print(f"Latest-only results for {target_name} saved to {latest_filename}")
 
