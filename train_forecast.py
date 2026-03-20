@@ -58,7 +58,7 @@ def balanced_quantile_loss(preds, target, quantiles):
 
 def train_model(model, train_loader, val_loader, optimizer, scheduler, model_path, epochs=1000):
     model.to(DEVICE)
-    best_val_loss = float('inf')
+    best_loss = float('inf')
     patience = 100
     counter = 0
     
@@ -78,19 +78,26 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, model_pat
             train_loss += loss.item()
             
         train_loss /= len(train_loader)
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for X_batch, y_batch in val_loader:
-                X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
-                preds = model(X_batch)
-                loss = balanced_quantile_loss(preds, y_batch, QUANTILES)
-                val_loss += loss.item()
-        val_loss /= len(val_loader)
-        scheduler.step(val_loss)
         
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # Validation
+        if len(val_loader) > 0:
+            model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
+                    preds = model(X_batch)
+                    loss = balanced_quantile_loss(preds, y_batch, QUANTILES)
+                    val_loss += loss.item()
+            val_loss /= len(val_loader)
+            monitor_loss = val_loss
+        else:
+            monitor_loss = train_loss
+            
+        scheduler.step(monitor_loss)
+        
+        if monitor_loss < best_loss:
+            best_loss = monitor_loss
             torch.save(model.state_dict(), model_path)
             counter = 0
         else:
